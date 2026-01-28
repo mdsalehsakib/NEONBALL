@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Neon Runner: Hardcore Mode</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Segoe UI', sans-serif; touch-action: none; user-select: none; }
+        canvas { display: block; }
+        video { display: none; }
+
+        /* --- HUD --- */
+        #hud-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            box-shadow: inset 0 0 50px rgba(0, 255, 255, 0.2);
+            z-index: 10;
+            transition: box-shadow 0.2s;
+        }
+        /* Red alert state */
+        .damage-effect { box-shadow: inset 0 0 100px rgba(255, 0, 0, 0.8) !important; background: rgba(255,0,0,0.1); }
+
+        #crosshair {
+            position: absolute; top: 50%; left: 50%;
+            width: 40px; height: 40px;
+            transform: translate(-50%, -50%);
+            border: 2px solid rgba(0, 255, 255, 0.5); border-radius: 50%;
+            transition: transform 0.1s;
+        }
+
+        .hud-panel {
+            position: absolute;
+            background: rgba(0, 20, 40, 0.8);
+            border: 1px solid rgba(0, 255, 255, 0.3);
+            padding: 10px 15px; color: #0ff;
+            font-size: 14px; border-radius: 8px;
+            backdrop-filter: blur(4px);
+            font-weight: bold;
+        }
+
+        #top-center { 
+            top: 20px; left: 50%; transform: translateX(-50%); 
+            text-align: center; border-color: #fff;
+        }
+        #top-right { top: 20px; right: 20px; text-align: right; }
+        #bottom-left { bottom: 80px; left: 20px; }
+
+        .score-val { font-size: 32px; color: #fff; text-shadow: 0 0 15px #0ff; display: block; }
+        .label { font-size: 10px; color: #aaa; letter-spacing: 2px; }
+
+        /* --- SCREENS --- */
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            color: #fff; z-index: 100; text-align: center;
+        }
+        
+        button.game-btn {
+            margin-top: 25px; padding: 15px 40px;
+            background: #00ffcc; color: #000;
+            border: none; font-size: 20px; font-weight: 900;
+            cursor: pointer; border-radius: 50px;
+            box-shadow: 0 0 25px #00ffcc;
+            pointer-events: auto;
+            text-transform: uppercase;
+        }
+        button.game-btn:active { transform: scale(0.95); }
+
+        /* --- HAND TRACKER --- */
+        #hand-tracker {
+            position: absolute; width: 40px; height: 40px;
+            border: 3px solid #ff0055; border-radius: 50%;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 20px #ff0055;
+            display: none; transition: 0.05s;
+        }
+        .pinched { background: #ff0055; width: 20px; height: 20px; }
+
+        /* --- BRANDING --- */
+        #branding-btn {
+            position: absolute; bottom: 20px; left: 50%;
+            transform: translateX(-50%); z-index: 50;
+            pointer-events: auto; text-decoration: none;
+            color: white; background: rgba(0, 0, 0, 0.8);
+            border: 1px solid #00ffcc; padding: 10px 25px;
+            border-radius: 25px; font-size: 12px; font-weight: bold;
+            box-shadow: 0 0 15px rgba(0, 255, 204, 0.2);
+            white-space: nowrap;
+        }
+    </style>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/+esm"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <video id="webcam" autoplay playsinline webkit-playsinline></video>
+
+    <div id="overlay">
+        <h1 id="title-text" style="font-size: 40px; margin:0; text-shadow: 0 0 20px cyan;">NEON RUNNER</h1>
+        <p id="status-text" style="color: #aaa; margin-top: 10px;">Initializing Neural Link...</p>
+        
+        <div id="final-score" style="display:none; margin-top: 20px;">
+            <div class="label">FINAL SCORE</div>
+            <div class="score-val" id="end-score-val">0</div>
+        </div>
+
+        <button id="start-btn" class="game-btn" style="display:none;">START ENGINE</button>
+    </div>
+
+    <div id="hud-layer">
+        <div id="crosshair"></div>
+        <div id="hand-tracker"></div>
+
+        <div id="top-center" class="hud-panel">
+            <div class="label">DISTANCE</div>
+            <span id="score-display" class="score-val">0000</span>
+        </div>
+
+        <div id="top-right" class="hud-panel">
+            <div class="label">HULL INTEGRITY</div>
+            <div id="health-display" style="color:#0f0; font-size: 20px;">100%</div>
+        </div>
+
+        <div id="bottom-left" class="hud-panel">
+            <div class="label">SYSTEMS</div>
+            <div>WARP: <span id="warp-status" style="color:#0ff">READY</span></div>
+        </div>
+
+        <a id="branding-btn" href="https://linktr.ee/salehsakib" target="_blank">
+            Made by Md Saleh Sakib ↗
+        </a>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
+
+        // --- CONFIG ---
+        const BASE_SPEED = 1.5;
+        const WARP_SPEED = 6.0;
+        const TRACKING_STRENGTH = 0.03; // How hard they lock onto you
+        
+        // --- GLOBALS ---
+        let scene, camera, renderer, starMesh;
+        let obstacles = [];
+        let score = 0;
+        let gameSpeed = 0;
+        let targetGameSpeed = 0;
+        let isRunning = false;
+        let isGameOver = false;
+
+        // Player State
+        let playerX = 0;
+        let playerY = 0;
+        let isPinching = false;
+        
+        // Audio
+        let audioCtx, engineOsc, engineGain, warpNoise, warpGain;
+
+        // DOM
+        const hudLayer = document.getElementById('hud-layer');
+        const scoreEl = document.getElementById('score-display');
+        const healthEl = document.getElementById('health-display');
+        const endScoreEl = document.getElementById('end-score-val');
+        const finalScoreDiv = document.getElementById('final-score');
+        const startBtn = document.getElementById('start-btn');
+        const overlay = document.getElementById('overlay');
+        const statusText = document.getElementById('status-text');
+        const titleText = document.getElementById('title-text');
+        const handTracker = document.getElementById('hand-tracker');
+        const warpStatus = document.getElementById('warp-status');
+
+        // --- 1. SETUP ---
+        async function init() {
+            // Three.js
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x000000, 0.003);
+
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+
+            renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            document.body.appendChild(renderer.domElement);
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+            dirLight.position.set(0, 10, 5);
+            scene.add(dirLight);
+
+            createStarField();
+            await setupAI();
+
+            // Resize
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        // --- 2. GAME OBJECTS ---
+        function createStarField() {
+            const count = 2000;
+            const geom = new THREE.BufferGeometry();
+            const pos = new Float32Array(count * 3);
+            for(let i=0; i<count*3; i++) pos[i] = (Math.random()-0.5) * 1000;
+            geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+            const mat = new THREE.PointsMaterial({ size: 2, color: 0x88ccff });
+            starMesh = new THREE.Points(geom, mat);
+            scene.add(starMesh);
+        }
+
+        function spawnObstacle() {
+            if(!isRunning) return;
+
+            // Create a glowing red box
+            const geom = new THREE.IcosahedronGeometry(Math.random() * 2 + 1, 0);
+            const mat = new THREE.MeshStandardMaterial({ 
+                color: 0xff0044, 
+                emissive: 0xff0044,
+                emissiveIntensity: 0.8,
+                wireframe: true 
+            });
+            
+            const obs = new THREE.Mesh(geom, mat);
+            
+            // SPAWN LOGIC: Target the player spawn zone
+            obs.position.z = -500; // Far ahead
+            
+            // Get current player position (Camera)
+            const targetX = camera.position.x;
+            const targetY = camera.position.y;
+            
+            // Spawn with randomness, but biased heavily towards where the player is NOW
+            // Spread = 40. We spawn within X +/- 30 to force a dodge.
+            obs.position.x = targetX + (Math.random() - 0.5) * 60;
+            obs.position.y = targetY + (Math.random() - 0.5) * 40;
+
+            // Assign "Homing" properties
+            obs.isHoming = true;
+            obs.rotSpeed = {
+                x: Math.random() * 0.1,
+                y: Math.random() * 0.1
+            };
+
+            scene.add(obs);
+            obstacles.push(obs);
+        }
+
+        // --- 3. AUDIO ---
+        function initAudio() {
+            if(audioCtx) return;
+            const AC = window.AudioContext || window.webkitAudioContext;
+            audioCtx = new AC();
+
+            // Engine Hum
+            engineOsc = audioCtx.createOscillator();
+            engineGain = audioCtx.createGain();
+            engineOsc.type = 'sawtooth';
+            engineOsc.frequency.value = 60;
+            engineOsc.connect(engineGain);
+            engineGain.connect(audioCtx.destination);
+            engineGain.gain.value = 0.05;
+            engineOsc.start();
+
+            // Warp Noise
+            const bSize = audioCtx.sampleRate * 2;
+            const buf = audioCtx.createBuffer(1, bSize, audioCtx.sampleRate);
+            const data = buf.getChannelData(0);
+            for(let i=0; i<bSize; i++) data[i] = Math.random()*2-1;
+            
+            warpNoise = audioCtx.createBufferSource();
+            warpNoise.buffer = buf;
+            warpNoise.loop = true;
+            warpGain = audioCtx.createGain();
+            warpGain.gain.value = 0;
+            
+            const wFilter = audioCtx.createBiquadFilter();
+            wFilter.type = 'highpass';
+            wFilter.frequency.value = 600;
+            
+            warpNoise.connect(wFilter);
+            wFilter.connect(warpGain);
+            warpGain.connect(audioCtx.destination);
+            warpNoise.start();
+        }
+
+        function playCrashSound() {
+            if(!audioCtx) return;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(100, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+            gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.5);
+        }
+
+        // --- 4. GAME LOGIC ---
+        function startGame() {
+            initAudio();
+            isRunning = true;
+            isGameOver = false;
+            score = 0;
+            gameSpeed = BASE_SPEED;
+            obstacles.forEach(o => scene.remove(o));
+            obstacles = [];
+            
+            overlay.style.display = 'none';
+            hudLayer.classList.remove('damage-effect');
+            healthEl.innerText = "100%";
+            healthEl.style.color = "#0f0";
+            
+            animate();
+            
+            // Increasing difficulty spawner
+            const spawnLoop = () => {
+                if(!isRunning) return;
+                spawnObstacle();
+                // Spawn faster as score increases
+                let nextTime = 1000 - (score * 0.5);
+                if(nextTime < 300) nextTime = 300; // Cap max spawn rate
+                setTimeout(spawnLoop, nextTime);
+            };
+            spawnLoop();
+        }
+
+        function gameOver() {
+            isRunning = false;
+            isGameOver = true;
+            playCrashSound();
+            
+            // Visual Damage
+            hudLayer.classList.add('damage-effect');
+            healthEl.innerText = "CRITICAL FAILURE";
+            healthEl.style.color = "red";
+
+            setTimeout(() => {
+                titleText.innerText = "MISSION FAILED";
+                statusText.innerText = "Hull Destroyed";
+                finalScoreDiv.style.display = 'block';
+                endScoreEl.innerText = Math.floor(score);
+                startBtn.innerText = "RETRY MISSION";
+                overlay.style.display = 'flex';
+                startBtn.style.display = 'block';
+            }, 1000);
+        }
+
+        // --- 5. AI INPUT ---
+        async function setupAI() {
+            try {
+                const vision = await FilesetResolver.forVisionTasks(
+                    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+                );
+                const landmarker = await HandLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numHands: 1
+                });
+
+                const video = document.getElementById('webcam');
+                // Force user-facing camera
+                navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: "user", width: 640, height: 480 } 
+                }).then((stream) => {
+                    video.srcObject = stream;
+                    video.addEventListener("loadeddata", () => {
+                        statusText.innerText = "CAMERA ONLINE";
+                        startBtn.style.display = "block";
+                        startBtn.addEventListener('click', startGame);
+                        predictWebcam(landmarker, video);
+                    });
+                });
+            } catch (e) {
+                statusText.innerText = "AI ERROR - REFRESH";
+            }
+        }
+
+        async function predictWebcam(landmarker, video) {
+            let lastTime = -1;
+            const loop = async () => {
+                if(video.currentTime !== lastTime) {
+                    lastTime = video.currentTime;
+                    const result = landmarker.detectForVideo(video, performance.now());
+                    
+                    if(result.landmarks && result.landmarks.length > 0) {
+                        const hand = result.landmarks[0];
+                        const index = hand[8];
+                        const thumb = hand[4];
+
+                        // Update HUD Tracker
+                        const screenX = (1 - index.x) * window.innerWidth;
+                        const screenY = index.y * window.innerHeight;
+                        handTracker.style.display = 'block';
+                        handTracker.style.left = screenX + 'px';
+                        handTracker.style.top = screenY + 'px';
+
+                        // Calculate Player Target Position
+                        const spreadX = 40; 
+                        const spreadY = 30;
+                        playerX = (0.5 - index.x) * 2 * spreadX; 
+                        playerY = (0.5 - index.y) * 2 * spreadY;
+
+                        // Pinch Check
+                        const dist = Math.hypot(index.x - thumb.x, index.y - thumb.y);
+                        if(dist < 0.06) {
+                            if(!isPinching) {
+                                isPinching = true;
+                                handTracker.classList.add('pinched');
+                                warpStatus.innerText = "ENGAGED";
+                                warpStatus.style.color = "#ff0055";
+                            }
+                        } else {
+                            if(isPinching) {
+                                isPinching = false;
+                                handTracker.classList.remove('pinched');
+                                warpStatus.innerText = "READY";
+                                warpStatus.style.color = "#0ff";
+                            }
+                        }
+                    } else {
+                        handTracker.style.display = 'none';
+                        isPinching = false;
+                        playerX *= 0.95;
+                        playerY *= 0.95;
+                    }
+                }
+                requestAnimationFrame(loop);
+            }
+            loop();
+        }
+
+        // --- 6. ANIMATION LOOP ---
+        function animate() {
+            if(!isRunning) return;
+            requestAnimationFrame(animate);
+
+            // 1. Movement Logic
+            camera.position.x += (playerX - camera.position.x) * 0.1;
+            camera.position.y += (playerY - camera.position.y) * 0.1;
+            
+            // Tilt camera
+            camera.rotation.z = (camera.position.x - playerX) * 0.02;
+            camera.rotation.y = (camera.position.x - playerX) * 0.01;
+
+            // 2. Speed Logic
+            targetGameSpeed = isPinching ? WARP_SPEED : BASE_SPEED;
+            gameSpeed += (targetGameSpeed - gameSpeed) * 0.05;
+            
+            // Score
+            score += gameSpeed * 0.5;
+            scoreEl.innerText = Math.floor(score).toString().padStart(4, '0');
+
+            // 3. Audio Update
+            if(audioCtx) {
+                engineOsc.frequency.value = 60 + (gameSpeed * 10);
+                warpGain.gain.value = (gameSpeed > 3) ? 0.1 : 0;
+            }
+
+            // 4. Star Field
+            const stars = starMesh.geometry.attributes.position.array;
+            for(let i=2; i<stars.length; i+=3) {
+                stars[i] += gameSpeed * 5; 
+                if(stars[i] > 10) {
+                    stars[i] = -1000;
+                    stars[i-1] = (Math.random()-0.5) * 1000;
+                    stars[i-2] = (Math.random()-0.5) * 1000;
+                }
+            }
+            starMesh.geometry.attributes.position.needsUpdate = true;
+
+            // 5. Obstacles & Collision (TARGETING LOGIC)
+            for(let i = obstacles.length - 1; i >= 0; i--) {
+                let obs = obstacles[i];
+                
+                // Move Forward
+                obs.position.z += gameSpeed * 8;
+                obs.rotation.x += obs.rotSpeed.x;
+                obs.rotation.y += obs.rotSpeed.y;
+
+                // --- HOMING LOGIC ---
+                // If obstacle is in front of player (z < 0) but getting close
+                if(obs.position.z < -10 && obs.position.z > -300) {
+                    // Calculate vector to player
+                    const dx = camera.position.x - obs.position.x;
+                    const dy = camera.position.y - obs.position.y;
+                    
+                    // Drift towards player (Stronger drift at high speeds)
+                    obs.position.x += dx * TRACKING_STRENGTH;
+                    obs.position.y += dy * TRACKING_STRENGTH;
+                }
+
+                // Check collision
+                if(obs.position.z > 0 && obs.position.z < 20) {
+                    const dist = Math.hypot(obs.position.x - camera.position.x, obs.position.y - camera.position.y);
+                    if(dist < 4) { // Hitbox size
+                        gameOver();
+                    }
+                }
+
+                // Remove if behind player
+                if(obs.position.z > 50) {
+                    scene.remove(obs);
+                    obstacles.splice(i, 1);
+                }
+            }
+
+            // Warp FOV Effect
+            const targetFOV = isPinching ? 100 : 70;
+            camera.fov += (targetFOV - camera.fov) * 0.05;
+            camera.updateProjectionMatrix();
+
+            renderer.render(scene, camera);
+        }
+
+        init();
+    </script>
+</body>
+</html>
